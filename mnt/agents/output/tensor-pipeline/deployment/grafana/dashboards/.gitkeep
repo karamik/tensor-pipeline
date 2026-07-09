@@ -1,0 +1,14 @@
+# This directory is for Grafana dashboard JSON files.
+#
+# Place exported dashboard JSON files here to provision them automatically.
+# Grafana will load them on startup.
+#
+# Example dashboards to create:
+#   - inference_metrics.json    # Latency, throughput, error rate
+#   - system_resources.json     # CPU, GPU, memory usage
+#   - model_performance.json    # Per-model accuracy, drift
+#
+# Export from Grafana UI: Dashboard → Share → Export → Save to file
+# Or create manually following Grafana documentation.
+#
+# Do not commit sensitive data in dashboards.
