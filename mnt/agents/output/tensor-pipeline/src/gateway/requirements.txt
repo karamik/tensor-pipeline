@@ -1,0 +1,26 @@
+# =============================================================================
+# Tensor Pipeline — Gateway Dependencies
+# =============================================================================
+
+# Core
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+pydantic==2.7.0
+
+# Triton Clients
+tritonclient[all]==2.46.0
+# Note: tritonclient[all] includes HTTP and gRPC clients
+# For HTTP only: tritonclient[http]
+# For gRPC only: tritonclient[grpc]
+
+# HTTP client (for health checks, metadata)
+httpx==0.27.0
+
+# Scientific
+numpy==1.26.4
+
+# Metrics
+prometheus-client==0.20.0
+
+# Optional: structured logging
+python-json-logger==2.0.7
