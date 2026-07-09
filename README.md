@@ -342,7 +342,7 @@ cp .env.example .env
 
 ## 📄 Лицензия
 
-Распространяется под лицензией MIT. См. [LICENSE](LICENSE).
+Распространяется под лицензией Apache-2.0. См. [LICENSE](LICENSE).
 
 ---
 
