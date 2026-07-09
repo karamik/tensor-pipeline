@@ -1,0 +1,211 @@
+version: "3.8"
+
+# =============================================================================
+# Tensor Pipeline — Zero-Downtime MLOps Stack
+# =============================================================================
+# One command to rule them all:  docker compose up --build
+#
+# Services:
+#   1. training      → Trains model, exports SavedModel to shared volume
+#   2. optimization  → Converts SavedModel → ONNX/TensorRT for Triton
+#   3. triton        → NVIDIA Triton Inference Server (hot-reload models)
+#   4. gateway       → FastAPI REST/gRPC proxy + Prometheus metrics
+#   5. prometheus    → Metrics collection (optional, for monitoring)
+#   6. grafana       → Visualization (optional, for dashboards)
+#
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # 1. TRAINING SERVICE
+  # ===========================================================================
+  training:
+    build:
+      context: .
+      dockerfile: deployment/docker/training.Dockerfile
+    container_name: tensor-pipeline-training
+    volumes:
+      - model_artifacts:/app/artifacts
+      - ./data:/app/data:ro
+    environment:
+      - MODEL_OUTPUT_DIR=/app/artifacts/saved_model
+      - EPOCHS=10
+      - BATCH_SIZE=32
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-}
+    # Training is a one-shot job, not a long-running service
+    # Use: docker compose run --rm training
+    profiles: ["training"]
+    networks:
+      - tensor-pipeline-net
+
+  # ===========================================================================
+  # 2. OPTIMIZATION SERVICE
+  # ===========================================================================
+  optimization:
+    build:
+      context: .
+      dockerfile: deployment/docker/optimization.Dockerfile
+    container_name: tensor-pipeline-optimization
+    volumes:
+      - model_artifacts:/app/artifacts
+      - triton_repo:/app/triton_repo
+    environment:
+      - SAVED_MODEL_DIR=/app/artifacts/saved_model
+      - TRITON_MODEL_REPO=/app/triton_repo
+      - OPTIMIZE_TRT=${OPTIMIZE_TRT:-false}      # Set true for TensorRT
+      - OPTIMIZE_ONNX=${OPTIMIZE_ONNX:-true}     # Set true for ONNX fallback
+      - TRT_PRECISION=${TRT_PRECISION:-FP16}     # FP16 or INT8
+    # One-shot optimization job
+    # Use: docker compose run --rm optimization
+    profiles: ["optimization"]
+    networks:
+      - tensor-pipeline-net
+    # GPU required for TensorRT optimization
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ===========================================================================
+  # 3. TRITON INFERENCE SERVER
+  # ===========================================================================
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.05-py3
+    container_name: tensor-pipeline-triton
+    volumes:
+      - triton_repo:/models:ro
+    command: >
+      tritonserver
+      --model-repository=/models
+      --model-control-mode=explicit
+      --load-model=*
+      --http-port=8000
+      --grpc-port=8001
+      --metrics-port=8002
+      --strict-model-config=false
+      --log-verbose=1
+    ports:
+      - "8000:8000"   # HTTP (Triton)
+      - "8001:8001"   # gRPC (Triton)
+      - "8002:8002"   # Metrics (Triton)
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    networks:
+      - tensor-pipeline-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # 4. FASTAPI GATEWAY
+  # ===========================================================================
+  gateway:
+    build:
+      context: .
+      dockerfile: deployment/docker/gateway.Dockerfile
+    container_name: tensor-pipeline-gateway
+    ports:
+      - "8080:8080"   # REST API
+      - "8081:8081"   # Gateway metrics (Prometheus)
+    environment:
+      - TRITON_HTTP_URL=http://triton:8000
+      - TRITON_GRPC_URL=triton:8001
+      - MODEL_NAME=${MODEL_NAME:-resnet50}
+      - MODEL_VERSION=${MODEL_VERSION:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-8}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
+    volumes:
+      - ./src/gateway:/app:ro
+    networks:
+      - tensor-pipeline-net
+    depends_on:
+      triton:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # 5. PROMETHEUS (Optional — metrics collection)
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: tensor-pipeline-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deployment/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - tensor-pipeline-net
+    profiles: ["monitoring"]
+    restart: unless-stopped
+
+  # ===========================================================================
+  # 6. GRAFANA (Optional — dashboards)
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: tensor-pipeline-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deployment/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deployment/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - tensor-pipeline-net
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  model_artifacts:
+    driver: local
+  triton_repo:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  tensor-pipeline-net:
+    driver: bridge
+    name: tensor-pipeline-net
