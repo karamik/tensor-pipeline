@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: "3.11"
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # ===========================================================================
+  # LINT & FORMAT CHECK
+  # ===========================================================================
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install linters
+        run: |
+          pip install black==24.4.2 isort==5.13.2 flake8==7.0.0
+
+      - name: Check black formatting
+        run: black --check --diff src/ tests/
+
+      - name: Check import sorting
+        run: isort --check-only --diff src/ tests/
+
+      - name: Run flake8
+        run: flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+
+  # ===========================================================================
+  # UNIT TESTS
+  # ===========================================================================
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install pytest==8.2.0 pytest-asyncio==0.23.7 httpx==0.27.0
+          pip install -r src/gateway/requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  # ===========================================================================
+  # DOCKER BUILD
+  # ===========================================================================
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deployment/docker/${{ matrix.service }}.Dockerfile
+          push: false
+          tags: tensor-pipeline/${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # DOCKER COMPOSE VALIDATION
+  # ===========================================================================
+  compose-check:
+    name: Compose Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config
+
+  # ===========================================================================
+  # SECURITY SCAN (Trivy)
+  # ===========================================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build gateway image
+        run: docker build -f deployment/docker/gateway.Dockerfile -t tensor-pipeline/gateway:scan .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: tensor-pipeline/gateway:scan
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
