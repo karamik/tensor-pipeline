@@ -1,0 +1,13 @@
+# This directory is intentionally left empty.
+# Triton Inference Server will populate it with model versions at runtime.
+# 
+# Expected structure after optimization:
+#
+# model_repository/
+# └── <model_name>/
+#     ├── config.pbtxt          # Model configuration
+#     └── 1/                    # Version directory
+#         └── model.onnx        # or model.plan (TensorRT)
+#
+# Do not commit large model files to Git.
+# Use .gitignore to exclude *.onnx, *.plan, and SavedModel artifacts.
